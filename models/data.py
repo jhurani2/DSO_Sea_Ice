@@ -11,13 +11,14 @@ import numpy as np
 import xarray as xr
 import torch
 from torch.utils.data import Dataset
+from torch.utils.data import DataLoader, random_split
 
 
 class XarrayImageDataset(Dataset):
     """A simple Dataset that reads a single xarray Dataset and yields samples.
 
     Parameters
-    ----------
+    ----------s
     ds: xarray.Dataset or path
         The dataset containing variables. If path, opened with xarray.open_zarr/open_dataset.
     input_vars: list[str]
@@ -74,19 +75,24 @@ class XarrayImageDataset(Dataset):
 
 
 def get_dataloaders(ds, input_vars: List[str], target_var: str, lead: int = 1,
-                    batch_size: int = 8, val_fraction: float = 0.2, num_workers: int = 4):
-    """Create train/val dataloaders from an xarray dataset or filepath."""
-    import torch
-    from torch.utils.data import DataLoader, random_split
+                    batch_size: int = 8, test_fraction: float = 0.2, num_workers: int = 4):
+    """Create train/test dataloaders from an xarray dataset or filepath.
+
+    Use observational/validation data separately as `val_loader` when training.
+    Returns (train_loader, test_loader).
+    """
 
     dataset = XarrayImageDataset(ds, input_vars, target_var, lead=lead)
     n = len(dataset)
-    nval = int(n * val_fraction)
-    ntrain = n - nval
-    train_ds, val_ds = random_split(dataset, [ntrain, nval])
+    ntest = int(n * test_fraction)
+    ntrain = n - ntest
+    if ntrain <= 0:
+        raise ValueError('Not enough samples after splitting; reduce test_fraction')
+
+    train_ds, test_ds = random_split(dataset, [ntrain, ntest])
 
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True,
                               num_workers=num_workers, pin_memory=True)
-    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False,
-                            num_workers=num_workers, pin_memory=True)
-    return train_loader, val_loader
+    test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False,
+                             num_workers=num_workers, pin_memory=True)
+    return train_loader, test_loader

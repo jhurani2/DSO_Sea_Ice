@@ -3,7 +3,6 @@
 These are lightweight PyTorch modules suitable as starting points.
 """
 from typing import Tuple
-
 import torch
 import torch.nn as nn
 
@@ -54,30 +53,75 @@ class SimpleCNN(nn.Module):
         return out
 
 
-class ResBlock(nn.Module):
-    def __init__(self, ch):
+class SEBlock(nn.Module):
+    """Squeeze-and-Excitation block for channel-wise attention."""
+    def __init__(self, channels, reduction=16):
         super().__init__()
-        self.conv = nn.Sequential(
+        self.fc = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(channels, channels // reduction, 1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(channels // reduction, channels, 1),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x):
+        w = self.fc(x)
+        return x * w
+
+
+class ResBlock(nn.Module):
+    def __init__(self, ch, dropout: float = 0.0, use_se: bool = False):
+        super().__init__()
+        layers = [
             nn.Conv2d(ch, ch, 3, padding=1),
             nn.BatchNorm2d(ch),
             nn.ReLU(inplace=True),
             nn.Conv2d(ch, ch, 3, padding=1),
             nn.BatchNorm2d(ch),
-        )
+        ]
+        if dropout > 0:
+            layers.append(nn.Dropout2d(dropout))
+        self.conv = nn.Sequential(*layers)
+        self.use_se = use_se
+        if use_se:
+            self.se = SEBlock(ch)
 
     def forward(self, x):
-        return nn.ReLU(inplace=True)(x + self.conv(x))
+        r = self.conv(x)
+        if self.use_se:
+            r = self.se(r)
+        return nn.ReLU(inplace=True)(x + r)
 
 
 class ResNetEncoderDecoder(nn.Module):
-    """A ResNet-like encoder-decoder for image-to-image tasks."""
-    def __init__(self, in_ch: int, out_ch: int = 1, base_filters: int = 32, nblocks: int = 3):
+    """A deeper ResNet-like encoder-decoder with optional down/up sampling.
+
+    This model keeps resolution the same (no complex U-Net) but adds multiple
+    residual blocks and uses a final conv to map to output channels. For larger
+    grids you may want to add pooling/upsampling stages.
+    """
+    def __init__(self, in_ch: int, out_ch: int = 1, base_filters: int = 64,
+                 nblocks: int = 6, dropout: float = 0.1, use_se: bool = True):
         super().__init__()
-        self.stem = nn.Conv2d(in_ch, base_filters, 3, padding=1)
-        self.blocks = nn.Sequential(*[ResBlock(base_filters) for _ in range(nblocks)])
+        self.stem = nn.Sequential(
+            nn.Conv2d(in_ch, base_filters, 3, padding=1),
+            nn.BatchNorm2d(base_filters),
+            nn.ReLU(inplace=True),
+        )
+        blocks = []
+        for _ in range(nblocks):
+            blocks.append(ResBlock(base_filters, dropout=dropout, use_se=use_se))
+        self.blocks = nn.Sequential(*blocks)
+        # optional bottleneck
+        self.bottleneck = nn.Sequential(
+            nn.Conv2d(base_filters, base_filters, 3, padding=1),
+            nn.ReLU(inplace=True)
+        )
         self.head = nn.Conv2d(base_filters, out_ch, 1)
 
     def forward(self, x):
         h = self.stem(x)
         h = self.blocks(h)
+        h = self.bottleneck(h)
         return self.head(h)
