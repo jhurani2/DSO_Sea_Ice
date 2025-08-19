@@ -6,3 +6,11 @@ scikit-learn
 matplotlib
 plotly
 seaborn
+torch
+torchvision
+torchmetrics
+xarray
+dask
+zarr
+netcdf4
+cartopy
