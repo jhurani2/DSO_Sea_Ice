@@ -93,6 +93,21 @@ class Trainer:
                 times.append(t)
                 if max_batches and i + 1 >= max_batches:
                     break
+            if len(preds) == 0:
+                raise ValueError('No batches were returned from the loader')
             preds = np.concatenate(preds, axis=0)
             trues = np.concatenate(trues, axis=0)
+            # `times` is a list of arrays (one per batch). concatenate if possible
+            try:
+                times = np.concatenate([np.asarray(t) for t in times], axis=0)
+            except Exception:
+                # fallback: keep as list
+                pass
+
+            # If channel dimension is 1, squeeze to (N, H, W) for convenience
+            if preds.shape[1] == 1:
+                preds = preds[:, 0, ...]
+            if trues.shape[1] == 1:
+                trues = trues[:, 0, ...]
+
             return preds, trues, times

@@ -71,12 +71,38 @@ class XarrayImageDataset(Dataset):
         tgt_da = self.ds[self.target_var].isel(time=idx + self.lead)
         tgt = np.array(tgt_da)
 
-        return self._to_tensor(inp), self._to_tensor(tgt), np.datetime64(self.ds['time'].values[idx])
+        # Convert time to an integer (ns since epoch) so the default collate can
+        # stack the values into a batch. Returning numpy.datetime64 objects
+        # causes DataLoader to raise TypeError during collation.
+        # get raw time value (may be numpy.datetime64 or similar)
+        t_ns = None
+        t_val = None
+        try:
+            t_val = self.ds['time'].values[idx]
+            # normalize to nanosecond resolution then cast to int64
+            t_ns = np.datetime64(t_val).astype('datetime64[ns]').astype('int64')
+        except Exception:
+            # fallback: try int() then finally string
+            try:
+                t_ns = int(self.ds['time'].values[idx])
+            except Exception:
+                t_ns = str(self.ds['time'].values[idx])
+
+        return self._to_tensor(inp), self._to_tensor(tgt), t_ns
 
 
 def get_dataloaders(ds, input_vars: List[str], target_var: str, lead: int = 1,
-                    batch_size: int = 8, test_fraction: float = 0.2, num_workers: int = 4):
+                    batch_size: int = 8, test_fraction: float = 0.2, num_workers: int = 4,
+                    time_split: bool = False):
     """Create train/test dataloaders from an xarray dataset or filepath.
+
+    Parameters
+    ----------
+    ds, input_vars, target_var, lead: as in XarrayImageDataset
+    batch_size, test_fraction, num_workers: DataLoader params
+    time_split: bool
+        If True, perform a chronological split (earliest samples -> train,
+        latest samples -> test). If False (default), a randomized split is used.
 
     Use observational/validation data separately as `val_loader` when training.
     Returns (train_loader, test_loader).
@@ -84,14 +110,32 @@ def get_dataloaders(ds, input_vars: List[str], target_var: str, lead: int = 1,
 
     dataset = XarrayImageDataset(ds, input_vars, target_var, lead=lead)
     n = len(dataset)
+    if n == 0:
+        raise ValueError('Dataset contains no samples')
+
+    # Determine test/train sizes (ensure at least one train sample when possible)
     ntest = int(n * test_fraction)
+    if n > 1 and test_fraction > 0 and ntest == 0:
+        ntest = 1
     ntrain = n - ntest
     if ntrain <= 0:
-        raise ValueError('Not enough samples after splitting; reduce test_fraction')
+        ntest = max(0, n - 1)
+        ntrain = n - ntest
+        if ntrain <= 0:
+            raise ValueError('Not enough samples after splitting; reduce test_fraction or provide more data')
 
-    train_ds, test_ds = random_split(dataset, [ntrain, ntest])
+    if time_split:
+        # Chronological split: first ntrain indices -> train, last ntest -> test
+        indices = list(range(n))
+        train_idx = indices[:ntrain]
+        test_idx = indices[ntrain: ntrain + ntest]
+        train_ds = torch.utils.data.Subset(dataset, train_idx)
+        test_ds = torch.utils.data.Subset(dataset, test_idx)
+    else:
+        # Random split (default)
+        train_ds, test_ds = random_split(dataset, [ntrain, ntest])
 
-    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True,
+    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=not time_split,
                               num_workers=num_workers, pin_memory=True)
     test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False,
                              num_workers=num_workers, pin_memory=True)

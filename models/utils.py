@@ -6,11 +6,11 @@ import numpy as np
 
 
 def mae(pred: np.ndarray, truth: np.ndarray) -> float:
-    return float(np.mean(np.abs(pred - truth)))
+    return float(np.nanmean(np.abs(pred - truth)))
 
 
 def rmse(pred: np.ndarray, truth: np.ndarray) -> float:
-    return float(np.sqrt(np.mean((pred - truth) ** 2)))
+    return float(np.sqrt(np.nanmean((pred - truth) ** 2)))
 
 
 def r2_score(pred: np.ndarray, truth: np.ndarray) -> float:
