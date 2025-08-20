@@ -16,7 +16,7 @@ def rmse(pred: np.ndarray, truth: np.ndarray) -> float:
 def r2_score(pred: np.ndarray, truth: np.ndarray) -> float:
     # simple R2
     ss_res = np.sum((truth - pred) ** 2)
-    ss_tot = np.sum((truth - np.mean(truth)) ** 2)
+    ss_tot = np.sum((truth - np.nanmean(truth)) ** 2)
     return float(1 - ss_res / (ss_tot + 1e-12))
 
 

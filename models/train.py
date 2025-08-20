@@ -69,12 +69,15 @@ class Trainer:
         self.model.eval()
         running = 0.0
         n = 0
+        #Need to ignore NaN values since they are land
+    
         with torch.no_grad():
             for xb, yb, _ in loader:
                 xb = xb.to(self.device)
                 yb = yb.to(self.device)
+                mask = ~torch.isnan(yb)
                 pred = self.model(xb)
-                running += loss_fn(pred, yb).item() * xb.size(0)
+                running += loss_fn(pred[mask], yb[mask]).item() * xb.size(0)
                 n += xb.size(0)
         return running / max(1, n)
 

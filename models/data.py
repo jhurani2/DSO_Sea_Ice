@@ -5,7 +5,7 @@ Zarr or NetCDF files prepared earlier, extracts predictor and target variables,
 and returns torch tensors shaped (C, H, W) per time-step or stacked timesteps.
 """
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 import numpy as np
 import xarray as xr
@@ -28,7 +28,8 @@ class XarrayImageDataset(Dataset):
     lead: int
         How many timesteps ahead to predict (monthly lead).
     """
-    def __init__(self, ds, input_vars: List[str], target_var: str, lead: int = 1):
+    def __init__(self, ds, input_vars: List[str], target_var: str, lead: int = 1,
+                 normalize: bool = True, fill_na: Optional[float] = None, add_mask: bool = False):
         if isinstance(ds, (str, Path)):
             p = Path(ds)
             if p.suffix == '.zarr' or p.is_dir():
@@ -41,6 +42,13 @@ class XarrayImageDataset(Dataset):
         self.input_vars = input_vars
         self.target_var = target_var
         self.lead = int(lead)
+        # whether to normalize common variables (e.g., siconc 0-100 -> 0-1)
+        self.normalize = bool(normalize)
+        # if provided, replace NaNs in input arrays with this value
+        self.fill_na = fill_na
+        # if True, append a single-channel valid-data mask (1.0 valid, 0.0 invalid)
+        # to the input channels so the model can learn to ignore masked pixels.
+        self.add_mask = bool(add_mask)
 
         # Expect 'time' dimension
         if 'time' not in self.ds.dims:
@@ -64,12 +72,49 @@ class XarrayImageDataset(Dataset):
         for v in self.input_vars:
             da = self.ds[v].isel(time=time0)
             arr = np.array(da)
+            # Normalize sea-ice concentration if requested and appears to be 0-100
+            if self.normalize:
+                try:
+                    if v.lower() in ('siconc', 'sic') and np.nanmax(arr) > 1.5:
+                        arr = arr / 100.0
+                except Exception:
+                    pass
             inputs.append(arr)
         inp = np.stack(inputs, axis=0)  # (C, H, W)
 
         # target is target_var at time idx + lead
         tgt_da = self.ds[self.target_var].isel(time=idx + self.lead)
         tgt = np.array(tgt_da)
+        if self.normalize:
+            try:
+                if self.target_var.lower() in ('siconc', 'sic') and np.nanmax(tgt) > 1.5:
+                    tgt = tgt / 100.0
+            except Exception:
+                pass
+
+        # Build a mask from the target validity (useful for land/ice masks)
+        valid_mask = None
+        try:
+            valid_mask = ~np.isnan(tgt)
+        except Exception:
+            valid_mask = np.ones_like(tgt, dtype=bool)
+
+        # Optionally replace NaNs in inputs with a fill value (e.g., 0.0)
+        if self.fill_na is not None:
+            try:
+                inp = np.nan_to_num(inp, nan=float(self.fill_na))
+            except Exception:
+                pass
+
+        # Optionally append a mask channel (1=valid, 0=invalid) to the inputs
+        if self.add_mask:
+            try:
+                mask_ch = valid_mask.astype('float32')
+                if mask_ch.ndim == 2:
+                    mask_ch = np.expand_dims(mask_ch, 0)
+                inp = np.vstack([inp, mask_ch])
+            except Exception:
+                pass
 
         # Convert time to an integer (ns since epoch) so the default collate can
         # stack the values into a batch. Returning numpy.datetime64 objects
@@ -91,9 +136,11 @@ class XarrayImageDataset(Dataset):
         return self._to_tensor(inp), self._to_tensor(tgt), t_ns
 
 
+
 def get_dataloaders(ds, input_vars: List[str], target_var: str, lead: int = 1,
                     batch_size: int = 8, test_fraction: float = 0.2, num_workers: int = 4,
-                    time_split: bool = False):
+                    time_split: bool = False, normalize: bool = True,
+                    fill_na: Optional[float] = None, add_mask: bool = False):
     """Create train/test dataloaders from an xarray dataset or filepath.
 
     Parameters
@@ -108,7 +155,8 @@ def get_dataloaders(ds, input_vars: List[str], target_var: str, lead: int = 1,
     Returns (train_loader, test_loader).
     """
 
-    dataset = XarrayImageDataset(ds, input_vars, target_var, lead=lead)
+    dataset = XarrayImageDataset(ds, input_vars, target_var, lead=lead,
+                                normalize=normalize, fill_na=fill_na, add_mask=add_mask)
     n = len(dataset)
     if n == 0:
         raise ValueError('Dataset contains no samples')
