@@ -32,16 +32,48 @@ class Trainer:
         for ep in range(epochs):
             self.model.train()
             running = 0.0
+            n_valid = 0  # total number of valid (non-NaN) target elements seen
             for xb, yb, _ in tqdm(train_loader, desc=f"Train ep {ep+1}/{epochs}"):
                 xb = xb.to(self.device)
                 yb = yb.to(self.device)
                 pred = self.model(xb)
-                loss = loss_fn(pred, yb)
+
+                # Mask out NaN targets (land/missing values) to avoid NaN losses
+                try:
+                    mask = ~torch.isnan(yb)
+                except Exception:
+                    mask = None
+
+                if mask is not None:
+                    valid_count = int(mask.sum())
+                    # If no valid pixels in batch, skip
+                    if valid_count == 0:
+                        continue
+                    # compute loss only on valid entries
+                    loss = loss_fn(pred[mask], yb[mask])
+                else:
+                    # when mask logic isn't available, treat whole batch as valid
+                    valid_count = xb.size(0) * xb.numel() // xb.size(0)  # fallback: per-batch count (best-effort)
+                    loss = loss_fn(pred, yb)
+
+                # guard: if loss is NaN skip this batch
+                if torch.isnan(loss):
+                    continue
+
                 opt.zero_grad()
                 loss.backward()
                 opt.step()
-                running += loss.item()
-            train_loss = running / max(1, len(train_loader))
+
+                # weight by number of valid elements so averages are on a per-pixel basis
+                running += float(loss.item()) * valid_count
+                n_valid += valid_count
+
+            # compute per-element average; if no valid pixels seen, return NaN to signal issue
+            if n_valid == 0:
+                train_loss = float('nan')
+            else:
+                train_loss = running / float(n_valid)
+
             history['train_loss'].append(train_loss)
             print(f"Epoch {ep+1} train loss: {train_loss:.4f}")
 
@@ -68,18 +100,26 @@ class Trainer:
     def evaluate(self, loader, loss_fn=nn.L1Loss()):
         self.model.eval()
         running = 0.0
-        n = 0
-        #Need to ignore NaN values since they are land
-    
+        n = 0  # total number of valid (non-NaN) target elements
+
         with torch.no_grad():
             for xb, yb, _ in loader:
                 xb = xb.to(self.device)
                 yb = yb.to(self.device)
-                mask = ~torch.isnan(yb)
                 pred = self.model(xb)
-                running += loss_fn(pred[mask], yb[mask]).item() * xb.size(0)
-                n += xb.size(0)
-        return running / max(1, n)
+                mask = ~torch.isnan(yb)
+                valid_count = int(mask.sum())
+                # skip batches with no valid pixels
+                if valid_count == 0:
+                    continue
+                loss_val = loss_fn(pred[mask], yb[mask]).item()
+                # weight by number of valid elements
+                running += loss_val * valid_count
+                n += valid_count
+
+        if n == 0:
+            return float('nan')
+        return running / float(n)
 
     def predict_batch(self, loader, max_batches: Optional[int] = None):
         """Return numpy arrays for predictions and truths (for plotting)."""

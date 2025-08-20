@@ -23,7 +23,7 @@ def run_quick_test(ds_path: str, batch_size: int = 8, epochs: int = 2):
     train_loader, test_loader = get_dataloaders(ds_path, input_vars, target_var,
                                                 lead=1, batch_size=batch_size,
                                                 test_fraction=0.2, num_workers=0,
-                                                time_split=True, normalize=True)
+                                                time_split=True, normalize=True, fill_na=0.0, add_mask=True)
 
     # Build a small CNN — channel count depends on dataset plus optional mask
     sample_batch = next(iter(train_loader))
