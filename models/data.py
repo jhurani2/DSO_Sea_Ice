@@ -136,7 +136,6 @@ class XarrayImageDataset(Dataset):
         return self._to_tensor(inp), self._to_tensor(tgt), t_ns
 
 
-
 def get_dataloaders(ds, input_vars: List[str], target_var: str, lead: int = 1,
                     batch_size: int = 8, test_fraction: float = 0.2, num_workers: int = 4,
                     time_split: bool = False, normalize: bool = True,
