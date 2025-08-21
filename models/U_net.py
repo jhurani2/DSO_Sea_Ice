@@ -2,7 +2,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
-
+import glob
+from torch.utils.data import ConcatDataset, DataLoader
 class ConvBlock(nn.Module):
     """Robust convolution block with BatchNorm and optional dropout"""
     def __init__(self, in_ch, out_ch, dropout=0.0):
@@ -254,35 +255,64 @@ class EnhancedTrainer:
 
 
 # Updated test function using robust U-Net
-def run_robust_test(ds_path: str, batch_size: int = 8, epochs: int = 50):
+#Handles multiple variables, but sea ice concentration by default
+def run_robust_test(ds, variables: list = ['siconc'], target_var: str = 'siconc',
+                    batch_size: int = 8, epochs: int = 50):
     """
-    Drop-in replacement for your existing test function.
-    Just change SimpleCNN to create_robust_model and Trainer to EnhancedTrainer.
+    Multi-variable U-Net test function.
+    
+    Args:
+        ds_path: Path to dataset (can be combined .nc file)
+        variables: List of input variables ['siconc', 'w_speed', 'temp', ...]
+        target_var: Target variable to predict
+        batch_size, epochs: Training parameters
     """
     from models.data import get_dataloaders
     from models.utils import mae, rmse
     import matplotlib.pyplot as plt
-    import numpy as np
     
-    print('=== Robust U-Net Test ===')
-    
-    train_loader, test_loader = get_dataloaders(ds_path, ['siconc'], 'siconc',
-                                                lead=0, batch_size=batch_size,
-                                                test_fraction=0.2, num_workers=0,
-                                                time_split=True, normalize=True,
-                                                fill_na=0.0, add_mask=True)
+    print('=== Multi-Variable U-Net Test ===')
+    print(f'Input variables: {variables}')
+    print(f'Target variable: {target_var}')
 
+
+
+    #I want to load this for multiple files within the folder so that xb, yb is combined
+
+    nc_files = glob.glob(f"{ds}/*.nc")
+    train_datasets, test_datasets = [], []
+
+    for file in nc_files:
+        print(file)
+        train_loader, test_loader = get_dataloaders(file, variables, target_var,
+                                                    lead=0, batch_size=batch_size,
+                                                    test_fraction=0.2, num_workers=0,
+                                                    time_split=True, normalize=True,
+                                                    fill_na=0.0, add_mask=True)
+        train_datasets.append(train_loader.dataset)
+        test_datasets.append(test_loader.dataset)
+
+    # Combine all datasets
+    combined_train_dataset = ConcatDataset(train_datasets)
+    combined_test_dataset = ConcatDataset(test_datasets)
+
+    # Create DataLoaders
+    train_loader = DataLoader(combined_train_dataset, batch_size=batch_size, shuffle=True)
+    test_loader = DataLoader(combined_test_dataset, batch_size=batch_size, shuffle=False)
+    print("I'm here and I combined all datasets")
     # Get input channels
     sample_batch = next(iter(train_loader))
     xb, yb, t = sample_batch
-    in_ch = xb.shape[1]
+
+
     # Check if training and test data still have NaN values and substitute with 0
     for loader in [train_loader, test_loader]:
         for xb, yb, _ in loader:
             xb[torch.isnan(xb)] = 0
             yb[torch.isnan(yb)] = 0
-    print(xb, yb)
-    
+        print(xb, yb)
+
+    in_ch = xb.shape[1]
     print(f'Input channels: {in_ch}, Batch shape: {xb.shape}')
     
     # Create robust model (drop-in replacement)
@@ -321,6 +351,49 @@ def run_robust_test(ds_path: str, batch_size: int = 8, epochs: int = 50):
         im3 = axes[2].imshow(diff, cmap='RdBu_r', origin='lower')
         axes[2].set_title('Difference')
         plt.colorbar(im3, ax=axes[2])
+        
+        plt.tight_layout()
+        plt.show()
+
+        # Calculate baseline persistence error (use last available data as prediction)
+    persistence_mse = np.mean((trues[1:] - trues[:-1])**2)  # Simple persistence baseline
+
+    # Plot MSE vs epochs with baseline
+    import matplotlib.pyplot as plt
+
+    plt.figure(figsize=(10, 6))
+    plt.plot(history['train_loss'], label='Training MSE', linewidth=2)
+    plt.plot(history['test_loss'], label='Test MSE', linewidth=2) 
+    plt.axhline(float(persistence_mse), color='red', linestyle='--', label=f'Persistence Baseline ({persistence_mse:.4f})', linewidth=2)
+    plt.xlabel('Epochs')
+    plt.ylabel('MSE Loss')
+    plt.title('Model Performance vs Persistence Baseline')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.show()
+
+        # Arctic region plotting (vertical stacking)
+    if len(preds) > 0:
+        arctic_slice = slice(-80, None)  # Top 80 pixels for Arctic
+        idx = 0
+        
+        fig, axes = plt.subplots(3, 1, figsize=(12, 15))
+        
+        # True Arctic
+        im1 = axes[0].imshow(trues[idx][arctic_slice, :], cmap='Blues_r', origin='lower', vmin=0, vmax=1)
+        axes[0].set_title('True (Arctic)')
+        plt.colorbar(im1, ax=axes[0], shrink=0.8)
+        
+        # Predicted Arctic
+        im2 = axes[1].imshow(preds[idx][arctic_slice, :], cmap='Blues_r', origin='lower', vmin=0, vmax=1)
+        axes[1].set_title('Predicted (Arctic)')
+        plt.colorbar(im2, ax=axes[1], shrink=0.8)
+        
+        # Difference Arctic
+        diff = preds[idx][arctic_slice, :] - trues[idx][arctic_slice, :]
+        im3 = axes[2].imshow(diff, cmap='RdBu_r', origin='lower', vmin=-0.5, vmax=0.5)
+        axes[2].set_title('Difference (Arctic)')
+        plt.colorbar(im3, ax=axes[2], shrink=0.8)
         
         plt.tight_layout()
         plt.show()
