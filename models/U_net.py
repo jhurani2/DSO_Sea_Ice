@@ -136,16 +136,8 @@ class EnhancedTrainer:
         return alpha * mse_loss + (1 - alpha) * l1_loss
     
     def fit(self, train_loader, test_loader=None, epochs=50, lr=1e-4):
-        """Enhanced training with better defaults and scheduling"""
+        """Simplified but robust training"""
         optimizer = torch.optim.AdamW(self.model.parameters(), lr=lr, weight_decay=1e-4)
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer, mode='min', factor=0.5, patience=8
-        )
-
-        best_loss = float('inf')
-        patience_counter = 0
-        early_stop_patience = 20
-        
         history = {'train_loss': [], 'test_loss': []}
         
         for epoch in range(epochs):
@@ -154,15 +146,13 @@ class EnhancedTrainer:
             train_loss = 0.0
             
             for xb, yb, _ in train_loader:
-                xb, yb = xb.to(self.device), yb.to(self.device)
+                # Clean data - replace NaN with 0
+                xb = torch.nan_to_num(xb, 0.0).to(self.device)
+                yb = torch.nan_to_num(yb, 0.0).to(self.device)
                 
                 optimizer.zero_grad()
                 pred = self.model(xb)
-                mask = ~torch.isnan(yb)
-                if mask.sum() > 0:
-                    loss = self._combined_loss(pred[mask], yb[mask])
-                else:
-                    loss = torch.tensor(0.0, device=self.device)
+                loss = self._combined_loss(pred, yb)
                 loss.backward()
                 
                 # Gradient clipping for stability
@@ -180,32 +170,18 @@ class EnhancedTrainer:
                 self.model.eval()
                 with torch.no_grad():
                     for xb, yb, _ in test_loader:
-                        xb, yb = xb.to(self.device), yb.to(self.device)
+                        xb = torch.nan_to_num(xb, 0.0).to(self.device)
+                        yb = torch.nan_to_num(yb, 0.0).to(self.device)
                         pred = self.model(xb)
-                        # Only compute loss on non-NaN values
-                        mask = ~torch.isnan(yb)
-                        if mask.sum() > 0:
-                            test_loss += self._combined_loss(pred[mask], yb[mask]).item()
+                        test_loss += self._combined_loss(pred, yb).item()
                 
                 test_loss /= len(test_loader)
                 history['test_loss'].append(test_loss)
-                scheduler.step(test_loss)
                 
-                # Early stopping
-                if test_loss < best_loss:
-                    best_loss = test_loss
-                    patience_counter = 0
-                else:
-                    patience_counter += 1
-                
-                if patience_counter >= early_stop_patience:
-                    print(f"Early stopping at epoch {epoch+1}")
-                    break
-                
-                if epoch % 10 == 0:
+                if epoch % 10 == 0 or epoch == epochs-1:
                     print(f"Epoch {epoch+1}: train_loss={train_loss:.6f}, test_loss={test_loss:.6f}")
             else:
-                if epoch % 10 == 0:
+                if epoch % 10 == 0 or epoch == epochs-1:
                     print(f"Epoch {epoch+1}: train_loss={train_loss:.6f}")
         
         return history
@@ -254,6 +230,43 @@ class EnhancedTrainer:
         return preds, trues, times
 
 
+class SimpleTrainer:
+    
+    def __init__(self, model, device="cpu"):
+        self.model = model
+        self.device = device
+        self.model.to(self.device)
+    
+    def fit(self, train_loader, epochs=10):
+        optimizer = torch.optim.Adam(self.model.parameters(), lr=1e-3)
+        
+        for epoch in range(epochs):
+            total_loss = 0
+            batch_count = 0
+            
+            for xb, yb, _ in train_loader:
+                xb, yb = xb.to(self.device), yb.to(self.device)
+                
+                # Replace any remaining NaN with 0
+                xb = torch.nan_to_num(xb, 0.0)
+                yb = torch.nan_to_num(yb, 0.0)
+                
+                optimizer.zero_grad()
+                pred = self.model(xb)
+                loss = F.mse_loss(pred, yb)
+                loss.backward()
+                optimizer.step()
+                
+                total_loss += loss.item()
+                batch_count += 1
+                
+                if batch_count % 10 == 0:
+                    print(f"Epoch {epoch+1}, Batch {batch_count}, Loss: {loss.item():.6f}")
+            
+            avg_loss = total_loss / batch_count
+            print(f"Epoch {epoch+1} complete. Avg Loss: {avg_loss:.6f}")
+        return history
+    
 # Updated test function using robust U-Net
 #Handles multiple variables, but sea ice concentration by default
 def run_robust_test(ds, variables: list = ['siconc'], target_var: str = 'siconc',
@@ -322,9 +335,12 @@ def run_robust_test(ds, variables: list = ['siconc'], target_var: str = 'siconc'
     total_params = sum(p.numel() for p in model.parameters())
     print(f'Model parameters: {total_params:,}')
     
-    # Enhanced training
+    #Enhanced training
     trainer = EnhancedTrainer(model)
     history = trainer.fit(train_loader, test_loader, epochs=epochs, lr=1e-4)
+
+    # trainer = SimpleTrainer(model)
+    # history = trainer.fit(train_loader, epochs=epochs)
     
     # Evaluation
     test_loss = trainer.evaluate(test_loader)
