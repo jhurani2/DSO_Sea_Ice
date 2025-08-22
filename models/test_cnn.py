@@ -62,6 +62,31 @@ def run_quick_test(ds_path: str, batch_size: int = 8, epochs: int = 2):
         ax[2].set_title('Diff')
         plt.show()
 
+        if len(preds) > 0:
+            arctic_slice = slice(-80, None)  # Top 80 pixels for Arctic
+            idx = 0
+            
+            fig, axes = plt.subplots(3, 1, figsize=(12, 15))
+            
+            # True Arctic
+            im1 = axes[0].imshow(trues[idx][arctic_slice, :], cmap='Blues_r', origin='lower', vmin=0, vmax=1)
+            axes[0].set_title('True (Arctic)')
+            plt.colorbar(im1, ax=axes[0], shrink=0.8)
+            
+            # Predicted Arctic
+            im2 = axes[1].imshow(preds[idx][arctic_slice, :], cmap='Blues_r', origin='lower', vmin=0, vmax=1)
+            axes[1].set_title('Predicted (Arctic)')
+            plt.colorbar(im2, ax=axes[1], shrink=0.8)
+            
+            # Difference Arctic
+            diff = preds[idx][arctic_slice, :] - trues[idx][arctic_slice, :]
+            im3 = axes[2].imshow(diff, cmap='RdBu_r', origin='lower', vmin=-0.5, vmax=0.5)
+            axes[2].set_title('Difference (Arctic)')
+            plt.colorbar(im3, ax=axes[2], shrink=0.8)
+            
+            plt.tight_layout()
+            plt.show()
+
 
 if __name__ == '__main__':
     # Change this path to the dataset you want to test
